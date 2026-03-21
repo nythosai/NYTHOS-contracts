@@ -14,7 +14,8 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *
  *  Buyers pay in ETH. ETH/USD price is set by owner (updated periodically).
  *  Soft cap:  $100,000  — if not reached, buyers can refund
- *  Hard cap:  $245,000  — sale ends when hard cap is hit
+ *  Hard cap:  $219,000  — sale ends when hard cap is hit
+ *             ($25,000 private + $104,000 IDO + $90,000 public)
  *
  *  After sale, owner calls finalize() to release ETH and unlock claims.
  *  Buyers call claim() to receive their NYT.
@@ -41,16 +42,18 @@ contract NYTPresale is Ownable, ReentrancyGuard {
 
     // ─── Caps (in USD cents) ──────────────────────────────────────────────────
     uint256 public constant SOFT_CAP_USD = 100_000 * 100;   // $100,000
-    uint256 public constant HARD_CAP_USD = 245_000 * 100;   // $245,000
+    uint256 public constant HARD_CAP_USD = 219_000 * 100;   // $219,000
     uint256 public raisedUSD;                                // total raised (USD cents)
 
     // ─── ETH price oracle (set by owner) ─────────────────────────────────────
     uint256 public ethPriceUSD;   // USD cents per ETH (e.g. 300000 = $3,000.00)
 
     // ─── Buyer records ────────────────────────────────────────────────────────
-    mapping(address => uint256) public nytPurchased;   // total NYT bought
-    mapping(address => uint256) public ethPaid;         // total ETH paid
+    mapping(address => uint256) public nytPurchased;       // total NYT bought
+    mapping(address => uint256) public ethPaid;             // total ETH paid
     mapping(address => bool)    public whitelist;
+    mapping(address => Round)   public buyerRound;          // which round buyer participated in
+    uint256 public finalizedAt;                             // timestamp when finalize() was called
 
     // ─── Events ───────────────────────────────────────────────────────────────
     event SaleOpened(Round round);
@@ -69,12 +72,12 @@ contract NYTPresale is Ownable, ReentrancyGuard {
         nyt = IERC20(_nyt);
         ethPriceUSD = _initialEthPriceUSD;
 
-        // Private: $0.005, 20M NYT
-        rounds[0] = RoundInfo({ priceUSD: 50, allocation: 20_000_000 * 1e18, sold: 0, whitelistOnly: true });
-        // Presale: $0.008, 20M NYT
-        rounds[1] = RoundInfo({ priceUSD: 80, allocation: 20_000_000 * 1e18, sold: 0, whitelistOnly: false });
-        // Public:  $0.010, 20M NYT (remaining from presale allocation pool)
-        rounds[2] = RoundInfo({ priceUSD: 100, allocation: 20_000_000 * 1e18, sold: 0, whitelistOnly: false });
+        // Private: $0.005, 5M NYT  — whitelist only, $25,000 raise
+        rounds[0] = RoundInfo({ priceUSD: 50,  allocation:  5_000_000 * 1e18, sold: 0, whitelistOnly: true  });
+        // IDO:     $0.008, 13M NYT — Pinksale/Gempad, $104,000 raise
+        rounds[1] = RoundInfo({ priceUSD: 80,  allocation: 13_000_000 * 1e18, sold: 0, whitelistOnly: false });
+        // Public:  $0.010, 9M NYT  — 30-day cliff before claim, $90,000 raise
+        rounds[2] = RoundInfo({ priceUSD: 100, allocation:  9_000_000 * 1e18, sold: 0, whitelistOnly: false });
     }
 
     // ─── Owner controls ───────────────────────────────────────────────────────
@@ -90,8 +93,13 @@ contract NYTPresale is Ownable, ReentrancyGuard {
         emit SaleClosed();
     }
 
+    // Price bounds: $100 – $1,000,000 per ETH (in USD cents: 10000 – 100000000)
+    uint256 public constant MIN_ETH_PRICE_USD = 10_000;      // $100
+    uint256 public constant MAX_ETH_PRICE_USD = 100_000_000; // $1,000,000
+
     function setEthPrice(uint256 _priceUSD) external onlyOwner {
-        require(_priceUSD > 0, "Presale: zero price");
+        require(_priceUSD >= MIN_ETH_PRICE_USD, "Presale: price too low");
+        require(_priceUSD <= MAX_ETH_PRICE_USD, "Presale: price too high");
         ethPriceUSD = _priceUSD;
         emit EthPriceUpdated(_priceUSD);
     }
@@ -116,6 +124,8 @@ contract NYTPresale is Ownable, ReentrancyGuard {
         require(!finalized, "Presale: already finalized");
         saleOpen = false;
         finalized = true;
+
+        finalizedAt = block.timestamp;
 
         if (raisedUSD >= SOFT_CAP_USD) {
             softCapReached = true;
@@ -146,31 +156,45 @@ contract NYTPresale is Ownable, ReentrancyGuard {
         }
 
         // Calculate NYT amount
-        // nytAmount = (ethPaid * ethPriceUSD) / priceUSD
-        // All in consistent units: ethPriceUSD in USD cents, priceUSD in USD cents
+        // ethPriceUSD is in USD cents (e.g. 200000 = $2,000.00)
+        // priceUSD is in units of $0.0001 (e.g. 50 = $0.005, 80 = $0.008, 100 = $0.010)
+        // usdValue = ETH paid × ETH price → result in USD cents
+        // nytAmount = usdValue (cents) × 100 / priceUSD ($0.0001 units) → in NYT wei
+        //   factor of 100 converts from cents ($0.01) to $0.0001 units
         uint256 usdValue = (msg.value * ethPriceUSD) / 1e18;  // in USD cents
-        uint256 nytAmount = (usdValue * 1e18) / r.priceUSD;
+        uint256 nytAmount = (usdValue * 100 * 1e18) / r.priceUSD;
 
         // Cap at remaining round allocation
         uint256 remaining = r.allocation - r.sold;
         require(remaining > 0, "Presale: round sold out");
+
+        uint256 actualETHPaid = msg.value; // track what buyer actually pays after any refund
+
         if (nytAmount > remaining) {
+            // Save original amount BEFORE capping so we can calculate excess correctly
+            uint256 originalNytAmount = nytAmount;
             nytAmount = remaining;
-            // Refund excess ETH
-            uint256 excessUSD = ((nytAmount - remaining) * r.priceUSD) / 1e18;
-            uint256 excessETH = (excessUSD * 1e18) / ethPriceUSD;
-            (bool ok, ) = msg.sender.call{value: excessETH}("");
-            require(ok, "Presale: refund failed");
+
+            // Excess NYT buyer can't receive → refund that portion of ETH
+            uint256 excessNyt = originalNytAmount - nytAmount;
+            // Inverse of nytAmount formula: excessETH = excessNyt × priceUSD / (ethPriceUSD × 100)
+            uint256 excessETH = (excessNyt * r.priceUSD) / (ethPriceUSD * 100);
+            if (excessETH > 0 && excessETH <= msg.value) {
+                actualETHPaid = msg.value - excessETH;
+                (bool ok, ) = msg.sender.call{value: excessETH}("");
+                require(ok, "Presale: refund failed");
+            }
         }
 
-        // Cap at hard cap
-        uint256 thisUSD = (nytAmount * r.priceUSD) / 1e18;
+        // Cap at hard cap — thisUSD in cents = nytAmount × priceUSD / (1e18 × 100)
+        uint256 thisUSD = (nytAmount * r.priceUSD) / (1e18 * 100);
         require(raisedUSD + thisUSD <= HARD_CAP_USD, "Presale: hard cap reached");
 
         r.sold      += nytAmount;
         raisedUSD   += thisUSD;
         nytPurchased[msg.sender] += nytAmount;
-        ethPaid[msg.sender]      += msg.value;
+        ethPaid[msg.sender]      += actualETHPaid; // only track what was actually kept
+        buyerRound[msg.sender]    = currentRound;  // record which round they bought in
 
         // Auto-close when hard cap hit
         if (raisedUSD >= HARD_CAP_USD) {
@@ -183,12 +207,24 @@ contract NYTPresale is Ownable, ReentrancyGuard {
 
     // ─── Claim ────────────────────────────────────────────────────────────────
 
+    // Public sale buyers must wait 30 days after finalization before claiming
+    uint256 public constant PUBLIC_CLIFF = 30 days;
+
     /**
      * @notice Buyer claims their NYT after the sale is finalized and soft cap reached.
+     *         Public sale (Round 2) buyers must wait 30 days after finalization.
      */
     function claim() external nonReentrant {
         require(finalized, "Presale: not finalized");
         require(softCapReached, "Presale: soft cap not reached, use refund()");
+
+        // Enforce 30-day cliff for public sale buyers
+        if (buyerRound[msg.sender] == Round.PUBLIC) {
+            require(
+                block.timestamp >= finalizedAt + PUBLIC_CLIFF,
+                "Presale: 30-day cliff not yet passed"
+            );
+        }
 
         uint256 amount = nytPurchased[msg.sender];
         require(amount > 0, "Presale: nothing to claim");

@@ -5,6 +5,11 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+// Minimal interface to call burnTokens() on the NYT contract
+interface INYTBurnable is IERC20 {
+    function burnTokens(uint256 amount) external;
+}
+
 /**
  * @title NYTStaking — NYTHOS Revenue Share Staking
  * @notice Stake NYT for a fixed duration to earn a share of platform revenue.
@@ -24,7 +29,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  */
 contract NYTStaking is Ownable, ReentrancyGuard {
 
-    IERC20 public immutable nyt;
+    INYTBurnable public immutable nyt;
 
     // ─── Tiers ────────────────────────────────────────────────────────────────
     struct Tier {
@@ -65,7 +70,7 @@ contract NYTStaking is Ownable, ReentrancyGuard {
 
     constructor(address _nyt) Ownable(msg.sender) {
         require(_nyt != address(0), "Staking: zero address");
-        nyt = IERC20(_nyt);
+        nyt = INYTBurnable(_nyt);
 
         tiers[0] = Tier({ duration:  30 days, apyBP:  1200, multiplierBP: 10000, minStake:     100 * 1e18 });
         tiers[1] = Tier({ duration:  90 days, apyBP:  2800, multiplierBP: 15000, minStake:     500 * 1e18 });
@@ -156,9 +161,9 @@ contract NYTStaking is Ownable, ReentrancyGuard {
         if (early) {
             penalty  = (s.amount * PENALTY_BP) / 10000;
             returned = s.amount - penalty;
-            // Burn the penalty by sending to address(0) — requires NYT to support this
-            // or simply hold in contract. We hold it (no burn function on transfer).
-            // Owner can sweep penalty later.
+            // Burn penalty by calling burnTokens() on the NYT contract
+            // This permanently removes the tokens from supply (deflationary)
+            INYTBurnable(address(nyt)).burnTokens(penalty);
         }
 
         // Auto-claim pending rewards
@@ -180,16 +185,6 @@ contract NYTStaking is Ownable, ReentrancyGuard {
         nyt.transfer(msg.sender, returned);
 
         emit Unstaked(msg.sender, stakeId, returned, penalty);
-    }
-
-    /**
-     * @notice Owner can sweep accumulated early-unstake penalties.
-     */
-    function sweepPenalties(address to) external onlyOwner {
-        uint256 contractNYT = nyt.balanceOf(address(this));
-        // Calculate total locked NYT across active stakes to find penalty balance
-        // (simplified: owner is trusted to withdraw only excess)
-        nyt.transfer(to, contractNYT - _totalActiveStaked());
     }
 
     // ─── View helpers ─────────────────────────────────────────────────────────

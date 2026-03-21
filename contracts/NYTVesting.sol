@@ -24,7 +24,7 @@ contract NYTVesting is Ownable {
         uint256 totalAmount;      // total NYT allocated
         uint256 claimedAmount;    // how much has been claimed so far
         uint256 startTime;        // when vesting started (set at grant time)
-        bool    initialised;
+        bool    initialized;
     }
 
     mapping(address => VestingSchedule) public schedules;
@@ -48,7 +48,7 @@ contract NYTVesting is Ownable {
     function createGrant(address beneficiary, uint256 amount) external onlyOwner {
         require(beneficiary != address(0), "Vesting: zero address");
         require(amount > 0, "Vesting: zero amount");
-        require(!schedules[beneficiary].initialised, "Vesting: already exists");
+        require(!schedules[beneficiary].initialized, "Vesting: already exists");
 
         // Contract must hold enough tokens
         require(
@@ -60,7 +60,7 @@ contract NYTVesting is Ownable {
             totalAmount:   amount,
             claimedAmount: 0,
             startTime:     block.timestamp,
-            initialised:   true
+            initialized:   true
         });
 
         beneficiaries.push(beneficiary);
@@ -72,7 +72,7 @@ contract NYTVesting is Ownable {
      */
     function claim() external {
         VestingSchedule storage s = schedules[msg.sender];
-        require(s.initialised, "Vesting: no grant");
+        require(s.initialized, "Vesting: no grant");
 
         uint256 available = vestedAmount(msg.sender) - s.claimedAmount;
         require(available > 0, "Vesting: nothing to claim");
@@ -88,7 +88,7 @@ contract NYTVesting is Ownable {
      */
     function vestedAmount(address beneficiary) public view returns (uint256) {
         VestingSchedule memory s = schedules[beneficiary];
-        if (!s.initialised) return 0;
+        if (!s.initialized) return 0;
 
         uint256 elapsed = block.timestamp - s.startTime;
 
@@ -108,7 +108,7 @@ contract NYTVesting is Ownable {
      */
     function claimable(address beneficiary) external view returns (uint256) {
         VestingSchedule memory s = schedules[beneficiary];
-        if (!s.initialised) return 0;
+        if (!s.initialized) return 0;
         uint256 vested = vestedAmount(beneficiary);
         return vested > s.claimedAmount ? vested - s.claimedAmount : 0;
     }
