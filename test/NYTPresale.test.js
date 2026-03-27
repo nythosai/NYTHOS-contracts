@@ -4,7 +4,10 @@ const { time } = require('@nomicfoundation/hardhat-network-helpers');
 
 describe('NYTPresale', function () {
   let ethers;
-  let nyt, presale, owner, buyer, buyer2, whitelisted;
+  let nyt, presale, mockFeed, owner, buyer, buyer2, whitelisted;
+
+  // $2,000 in Chainlink 8-decimal format: 2000 × 10^8
+  const INITIAL_FEED_PRICE = 2000_00000000n;
 
   before(async function () {
     ethers = hre.ethers;
@@ -14,14 +17,26 @@ describe('NYTPresale', function () {
     [owner, buyer, buyer2, whitelisted] = await ethers.getSigners();
 
     const NYT = await ethers.getContractFactory('NYT');
-    nyt = await NYT.deploy(
-      owner.address, owner.address, owner.address,
-      owner.address, owner.address, owner.address,
-    );
+    nyt = await NYT.deploy(owner.address, owner.address);
     await nyt.waitForDeployment();
+    await nyt.initializeAllocations(
+      owner.address,
+      owner.address,
+      owner.address,
+      owner.address,
+    );
+
+    // Deploy mock Chainlink feed returning $2,000/ETH
+    const MockFeed = await ethers.getContractFactory('MockV3Aggregator');
+    mockFeed = await MockFeed.deploy(INITIAL_FEED_PRICE);
+    await mockFeed.waitForDeployment();
 
     const NYTPresale = await ethers.getContractFactory('NYTPresale');
-    presale = await NYTPresale.deploy(await nyt.getAddress(), 200000); // $2,000/ETH
+    presale = await NYTPresale.deploy(
+      await nyt.getAddress(),
+      await mockFeed.getAddress(),
+      200000, // manual fallback $2,000/ETH in cents
+    );
     await presale.waitForDeployment();
 
     // Fund presale contract with 27M NYT
@@ -65,13 +80,13 @@ describe('NYTPresale', function () {
       expect(await presale.whitelist(whitelisted.address)).to.be.false;
     });
 
-    it('non-whitelisted buyer cannot buy in private round', async function () {
+    it('non-whitelisted buyer cannot buy in round 0', async function () {
       await presale.openRound(0);
       await expect(presale.connect(buyer).buy({ value: ethers.parseEther('0.1') }))
         .to.be.revertedWith('Presale: not whitelisted');
     });
 
-    it('whitelisted buyer can buy in private round', async function () {
+    it('whitelisted buyer can buy in round 0', async function () {
       await presale.addToWhitelist([buyer.address]);
       await presale.openRound(0);
       await expect(presale.connect(buyer).buy({ value: ethers.parseEther('0.1') }))
@@ -82,7 +97,7 @@ describe('NYTPresale', function () {
   // ─── Buying ───────────────────────────────────────────────────────────────
   describe('Buying', function () {
     beforeEach(async function () {
-      await presale.openRound(1); // IDO — open to all
+      await presale.openRound(1); // round 1 — open to all
     });
 
     it('reverts if sale not open', async function () {
@@ -97,6 +112,7 @@ describe('NYTPresale', function () {
     });
 
     it('records correct NYT amount for buyer', async function () {
+      // Chainlink feed returns $2,000/ETH
       // 0.1 ETH × $2,000 = $200 / $0.008 per NYT = 25,000 NYT
       await presale.connect(buyer).buy({ value: ethers.parseEther('0.1') });
       expect(await presale.nytPurchased(buyer.address)).to.equal(ethers.parseEther('25000'));
@@ -110,7 +126,7 @@ describe('NYTPresale', function () {
 
     it('records which round buyer participated in', async function () {
       await presale.connect(buyer).buy({ value: ethers.parseEther('0.1') });
-      expect(await presale.buyerRound(buyer.address)).to.equal(1); // IDO
+      expect(await presale.buyerRound(buyer.address)).to.equal(1); // round 1
     });
   });
 
@@ -146,10 +162,9 @@ describe('NYTPresale', function () {
   // ─── Finalize + Claim ─────────────────────────────────────────────────────
   describe('Finalize and claim', function () {
     beforeEach(async function () {
-      // Set high ETH price to hit soft cap easily in tests
-      // $200,000/ETH: 0.5 ETH = $100,000 = exactly soft cap
-      await presale.setEthPrice(20000000);
-      await presale.openRound(1); // IDO
+      // Use mock feed at $200,000/ETH so 0.5 ETH = $100,000 = soft cap
+      await mockFeed.setAnswer(200000_00000000n); // $200,000 in 8-decimal format
+      await presale.openRound(1);
       await presale.connect(buyer).buy({ value: ethers.parseEther('0.5') });
     });
 
@@ -165,12 +180,20 @@ describe('NYTPresale', function () {
       expect(await presale.softCapReached()).to.be.true;
     });
 
-    it('IDO buyer can claim immediately after finalize', async function () {
+    it('round 1 buyer can claim after 30-day cliff', async function () {
       await presale.closeSale();
       await presale.finalize();
+      await time.increase(30 * 24 * 60 * 60 + 1);
       const amount = await presale.nytPurchased(buyer.address);
       await presale.connect(buyer).claim();
       expect(await nyt.balanceOf(buyer.address)).to.equal(amount);
+    });
+
+    it('round 1 buyer cannot claim before 30-day cliff', async function () {
+      await presale.closeSale();
+      await presale.finalize();
+      await expect(presale.connect(buyer).claim())
+        .to.be.revertedWith('Presale: nothing claimable yet. Cliff not passed.');
     });
 
     it('cannot claim before finalize', async function () {
@@ -179,40 +202,83 @@ describe('NYTPresale', function () {
     });
   });
 
-  // ─── 30-day cliff for public round ───────────────────────────────────────
-  describe('Public sale 30-day cliff', function () {
-    // buyer2 buys in IDO to exceed soft cap, buyer buys in PUBLIC for cliff testing
+  // ─── 30-day cliff for round 2 ────────────────────────────────────────────
+  describe('Round 2 30-day cliff', function () {
     beforeEach(async function () {
-      await presale.setEthPrice(20000000); // $200,000/ETH
+      await mockFeed.setAnswer(200000_00000000n); // $200,000/ETH
 
-      // Step 1: IDO round — buyer2 buys enough to exceed soft cap ($100k)
-      await presale.openRound(1); // IDO
-      await presale.connect(buyer2).buy({ value: ethers.parseEther('0.5') }); // $100k in IDO
+      // Round 1: buyer2 buys enough to exceed soft cap ($100k)
+      await presale.openRound(1);
+      await presale.connect(buyer2).buy({ value: ethers.parseEther('0.5') });
 
-      // Step 2: Public round — buyer buys (subject to 30-day cliff)
-      await presale.openRound(2); // PUBLIC
-      await presale.connect(buyer).buy({ value: ethers.parseEther('0.1') }); // $20k in PUBLIC
+      // Round 2: buyer buys (subject to 30-day cliff)
+      await presale.openRound(2);
+      await presale.connect(buyer).buy({ value: ethers.parseEther('0.1') });
 
       await presale.closeSale();
       await presale.finalize();
     });
 
-    it('public buyer cannot claim before 30 days', async function () {
+    it('round 2 buyer cannot claim before 30 days', async function () {
       await expect(presale.connect(buyer).claim())
-        .to.be.revertedWith('Presale: 30-day cliff not yet passed');
+        .to.be.revertedWith('Presale: nothing claimable yet. Cliff not passed.');
     });
 
-    it('public buyer can claim after 30 days', async function () {
+    it('round 2 buyer can claim after 30 days', async function () {
       await time.increase(30 * 24 * 60 * 60 + 1);
       const amount = await presale.nytPurchased(buyer.address);
       await presale.connect(buyer).claim();
       expect(await nyt.balanceOf(buyer.address)).to.equal(amount);
     });
 
-    it('IDO buyer (non-public) can claim immediately after finalize', async function () {
+    it('round 1 buyer can claim after 30-day cliff', async function () {
+      await time.increase(30 * 24 * 60 * 60 + 1);
       const amount = await presale.nytPurchased(buyer2.address);
       await presale.connect(buyer2).claim();
       expect(await nyt.balanceOf(buyer2.address)).to.equal(amount);
+    });
+  });
+
+  // ─── Mixed round claims (founder + early) ────────────────────────────────
+  describe('Mixed round claims', function () {
+    it('founder tokens unlock after 90 days while early tokens unlock after 30 days', async function () {
+      await mockFeed.setAnswer(200000_00000000n); // $200,000/ETH
+
+      // buyer2 buys 0.5 ETH in round 1 = $100,000 = 12.5M NYT (hits soft cap, < 13M cap)
+      await presale.openRound(1);
+      await presale.connect(buyer2).buy({ value: ethers.parseEther('0.5') });
+
+      // buyer buys small amount in round 1 so total stays under 13M cap
+      // 0.01 ETH × $200,000 = $2,000 / $0.008 = 250,000 NYT
+      await presale.connect(buyer).buy({ value: ethers.parseEther('0.01') });
+      const earlyAmount = await presale.nytPurchased(buyer.address);
+
+      // buyer also buys in round 0 (founder, whitelist-only)
+      // 0.01 ETH × $200,000 = $2,000 / $0.005 = 400,000 NYT
+      await presale.addToWhitelist([buyer.address]);
+      await presale.openRound(0);
+      await presale.connect(buyer).buy({ value: ethers.parseEther('0.01') });
+      const totalAmount = await presale.nytPurchased(buyer.address);
+      const founderAmount = totalAmount - earlyAmount;
+
+      await presale.closeSale();
+      await presale.finalize();
+
+      // Before 30 days: nothing claimable
+      await expect(presale.connect(buyer).claim())
+        .to.be.revertedWith('Presale: nothing claimable yet. Cliff not passed.');
+
+      // After 30 days: early access tokens claimable, founder still locked
+      await time.increase(30 * 24 * 60 * 60 + 1);
+      await presale.connect(buyer).claim();
+      expect(await nyt.balanceOf(buyer.address)).to.equal(earlyAmount);
+      expect(await presale.nytPurchased(buyer.address)).to.equal(founderAmount);
+
+      // After 90 days: founder tokens now claimable
+      await time.increase(60 * 24 * 60 * 60); // 60 more days = 90 total
+      await presale.connect(buyer).claim();
+      expect(await nyt.balanceOf(buyer.address)).to.equal(totalAmount);
+      expect(await presale.nytPurchased(buyer.address)).to.equal(0n);
     });
   });
 
@@ -253,6 +319,17 @@ describe('NYTPresale', function () {
       await presale.connect(buyer).buy({ value: ethers.parseEther('0.1') });
       const sold = await presale.totalSold();
       expect(sold).to.equal(await presale.nytPurchased(buyer.address));
+    });
+
+    it('raisedETH() keeps the total raised after finalize transfers funds out', async function () {
+      const ethIn = ethers.parseEther('0.5');
+      await mockFeed.setAnswer(200000_00000000n); // $200,000/ETH to hit soft cap
+      await presale.openRound(1);
+      await presale.connect(buyer).buy({ value: ethIn });
+      await presale.closeSale();
+      await presale.finalize();
+
+      expect(await presale.raisedETH()).to.equal(ethIn);
     });
   });
 });

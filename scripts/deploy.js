@@ -1,4 +1,4 @@
-// deploy.js — Deploys all NYTHOS contracts in the correct order
+// deploy.js — Deploys the NYTHOS Base contract stack in the current recommended order
 // Run:  npx hardhat run scripts/deploy.js --network baseSepolia
 // Then: npx hardhat run scripts/deploy.js --network base  (mainnet — after audit)
 
@@ -23,17 +23,12 @@ async function main() {
   console.log('Treasury wallet:  ', TREASURY_WALLET);
   console.log('');
 
-  // ─── Step 1: Deploy NYT with deployer holding all allocations temporarily ─
-  // (We need NYTPresale, NYTAirdrop, NYTStaking, NYTVesting addresses before
-  //  calling the NYT constructor — so we deploy NYT first with deployer as
-  //  a temporary holder, then transfer tokens to each contract after.)
+  // ─── Step 1: Deploy NYT shell ──────────────────────────────────────────────
+  // NYT mints the fixed supply to itself, then initializes the real allocation
+  // recipients once the dependent contracts are deployed.
   console.log('1. Deploying NYT token...');
   const NYT = await ethers.getContractFactory('NYT');
   const nyt = await NYT.deploy(
-    deployer.address,  // presale placeholder
-    deployer.address,  // airdrop placeholder
-    deployer.address,  // staking placeholder
-    deployer.address,  // vesting placeholder
     LIQUIDITY_WALLET,  // goes directly to liquidity wallet
     TREASURY_WALLET,   // goes directly to treasury wallet
   );
@@ -50,15 +45,28 @@ async function main() {
   console.log('   NYTVesting deployed:', vestingAddr);
 
   // ─── Step 3: Deploy NYTPresale ─────────────────────────────────────────────
-  // ETH price: set to $2,000 = 200000 USD cents. Update before mainnet deploy.
+  // Chainlink ETH/USD feed addresses:
+  //   Base mainnet:  0x71041dddad3595F9CEd3dCCFBe3D1F4b0a16Bb70
+  //   Base Sepolia:  0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1
+  const CHAINLINK_FEEDS = {
+    base:        '0x71041dddad3595F9CEd3dCCFBe3D1F4b0a16Bb70',
+    baseSepolia: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1',
+  };
+  const ETH_USD_FEED = process.env.ETH_USD_FEED
+    || CHAINLINK_FEEDS[hre.network.name]
+    || CHAINLINK_FEEDS.baseSepolia;
+
+  // Manual fallback price in USD cents — used only if Chainlink feed is stale (>2h).
+  // Formula: actual_eth_price_usd × 100 = value to pass in.
   const ETH_PRICE_USD_CENTS = process.env.ETH_PRICE_USD_CENTS
     ? parseInt(process.env.ETH_PRICE_USD_CENTS)
     : 200000; // $2,000 default
 
   console.log('3. Deploying NYTPresale...');
-  console.log('   ETH price used:', '$' + (ETH_PRICE_USD_CENTS / 100).toLocaleString());
+  console.log('   Chainlink ETH/USD feed:', ETH_USD_FEED);
+  console.log('   Manual fallback price: $' + (ETH_PRICE_USD_CENTS / 100).toLocaleString());
   const NYTPresale = await ethers.getContractFactory('NYTPresale');
-  const presale = await NYTPresale.deploy(nytAddr, ETH_PRICE_USD_CENTS);
+  const presale = await NYTPresale.deploy(nytAddr, ETH_USD_FEED, ETH_PRICE_USD_CENTS);
   await presale.waitForDeployment();
   const presaleAddr = await presale.getAddress();
   console.log('   NYTPresale deployed:', presaleAddr);
@@ -79,26 +87,21 @@ async function main() {
   const airdropAddr = await airdrop.getAddress();
   console.log('   NYTAirdrop deployed:', airdropAddr);
 
-  // ─── Step 6: Transfer allocations to actual contracts ─────────────────────
-  console.log('\n6. Transferring token allocations to contracts...');
+  // ─── Step 6: Initialize live allocation map ────────────────────────────────
+  console.log('\n6. Initializing NYT allocations...');
+  await (await nyt.initializeAllocations(
+    presaleAddr,
+    airdropAddr,
+    stakingAddr,
+    vestingAddr,
+  )).wait();
+  console.log('   Presale:   27,000,000 NYT →', presaleAddr);
+  console.log('   Airdrop:   18,000,000 NYT →', airdropAddr);
+  console.log('   Staking:   18,000,000 NYT →', stakingAddr);
+  console.log('   Vesting:   15,000,000 NYT →', vestingAddr);
 
-  const TOTAL        = 100_000_000n * 10n ** 18n;
-  const presaleAlloc = (TOTAL * 2700n) / 10000n;  // 27M NYT (private + IDO + public)
-  const airdropAlloc = (TOTAL * 1800n) / 10000n;  // 18M NYT
-  const stakingAlloc = (TOTAL * 1800n) / 10000n;  // 18M NYT (ecosystem & rewards)
-  const teamAlloc    = (TOTAL * 1500n) / 10000n;  // 15M NYT
-
-  await (await nyt.transfer(presaleAddr, presaleAlloc)).wait();
-  console.log('   Presale:  ', ethers.formatEther(presaleAlloc), 'NYT →', presaleAddr);
-
-  await (await nyt.transfer(airdropAddr, airdropAlloc)).wait();
-  console.log('   Airdrop:  ', ethers.formatEther(airdropAlloc), 'NYT →', airdropAddr);
-
-  await (await nyt.transfer(stakingAddr, stakingAlloc)).wait();
-  console.log('   Staking:  ', ethers.formatEther(stakingAlloc), 'NYT →', stakingAddr);
-
-  await (await nyt.transfer(vestingAddr, teamAlloc)).wait();
-  console.log('   Vesting:  ', ethers.formatEther(teamAlloc),    'NYT →', vestingAddr);
+  const TOTAL     = 100_000_000n * 10n ** 18n;
+  const teamAlloc = (TOTAL * 1500n) / 10000n;  // 15M NYT
 
   // ─── Step 7: Create vesting grant for team wallet ─────────────────────────
   console.log('\n7. Creating team vesting grant...');
@@ -118,7 +121,7 @@ async function main() {
   console.log('║ NYTAirdrop:    ', airdropAddr);
   console.log('╠══════════════════════════════════════════════════╣');
   console.log('║ ALLOCATION SUMMARY                               ║');
-  console.log('║  27M NYT → NYTPresale  (private+IDO+public)     ║');
+  console.log('║  27M NYT → NYTPresale  (founder+early+public)   ║');
   console.log('║  18M NYT → NYTAirdrop  (community airdrop)      ║');
   console.log('║  18M NYT → NYTStaking  (ecosystem & rewards)    ║');
   console.log('║  15M NYT → NYTVesting  (team, 1yr cliff)        ║');
@@ -128,22 +131,32 @@ async function main() {
   console.log('║ NEXT STEPS                                       ║');
   console.log('║  1. Verify on Basescan:                         ║');
   console.log('║     npx hardhat verify --network baseSepolia    ║');
-  console.log('║  2. Open private sale:                          ║');
-  console.log('║     presale.openRound(0)                        ║');
-  console.log('║  3. Add whitelist wallets:                      ║');
+  console.log('║  2. Save all addresses above in app/env config  ║');
+  console.log('║  3. ETH price sourced from Chainlink feed.      ║');
+  console.log('║     setEthPrice() is now a manual fallback only ║');
+  console.log('║     used if Chainlink is stale (>2h). No need  ║');
+  console.log('║     to call it regularly in normal operation.   ║');
+  console.log('║  4. If using round 0, seed founder allowlist:   ║');
   console.log('║     presale.addToWhitelist([...addresses])      ║');
-  console.log('║  4. Keep ETH price updated:                     ║');
-  console.log('║     presale.setEthPrice(priceInUSDCents)        ║');
-  console.log('║  5. Save all addresses above in your .env!      ║');
+  console.log('║  5. Keep sale closed until docs/audit are ready ║');
+  console.log('║  6. Open a round only when launch timing is set ║');
   console.log('╚══════════════════════════════════════════════════╝');
 
   // Machine-readable output for copy-paste into .env
   console.log('\n── Copy into your .env ──');
+  console.log(`NYT_TOKEN_ADDRESS=${nytAddr}`);
   console.log(`NYT_CONTRACT_ADDRESS=${nytAddr}`);
   console.log(`NYT_PRESALE_ADDRESS=${presaleAddr}`);
   console.log(`NYT_STAKING_ADDRESS=${stakingAddr}`);
   console.log(`NYT_VESTING_ADDRESS=${vestingAddr}`);
   console.log(`NYT_AIRDROP_ADDRESS=${airdropAddr}`);
+
+  console.log('\n── Copy into NYTHOS-app/.env ──');
+  console.log(`VITE_NYT_ADDRESS=${nytAddr}`);
+  console.log(`VITE_NYT_PRESALE_ADDRESS=${presaleAddr}`);
+  console.log(`VITE_NYT_STAKING_ADDRESS=${stakingAddr}`);
+  console.log(`VITE_NYT_VESTING_ADDRESS=${vestingAddr}`);
+  console.log(`VITE_NYT_AIRDROP_ADDRESS=${airdropAddr}`);
 }
 
 main().catch((err) => {

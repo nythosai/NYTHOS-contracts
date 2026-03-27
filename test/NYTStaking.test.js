@@ -16,11 +16,14 @@ describe('NYTStaking', function () {
     [owner, staker, staker2] = await ethers.getSigners();
 
     const NYT = await ethers.getContractFactory('NYT');
-    nyt = await NYT.deploy(
-      owner.address, owner.address, owner.address,
-      owner.address, owner.address, owner.address,
-    );
+    nyt = await NYT.deploy(owner.address, owner.address);
     await nyt.waitForDeployment();
+    await nyt.initializeAllocations(
+      owner.address,
+      owner.address,
+      owner.address,
+      owner.address,
+    );
 
     const NYTStaking = await ethers.getContractFactory('NYTStaking');
     staking = await NYTStaking.deploy(await nyt.getAddress());

@@ -18,11 +18,14 @@ describe('NYTAirdrop', function () {
     [owner, recip1, recip2, other] = await ethers.getSigners();
 
     const NYT = await ethers.getContractFactory('NYT');
-    nyt = await NYT.deploy(
-      owner.address, owner.address, owner.address,
-      owner.address, owner.address, owner.address,
-    );
+    nyt = await NYT.deploy(owner.address, owner.address);
     await nyt.waitForDeployment();
+    await nyt.initializeAllocations(
+      owner.address,
+      owner.address,
+      owner.address,
+      owner.address,
+    );
 
     const NYTAirdrop = await ethers.getContractFactory('NYTAirdrop');
     airdrop = await NYTAirdrop.deploy(await nyt.getAddress());

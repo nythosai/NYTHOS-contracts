@@ -17,19 +17,30 @@ describe('NYT Token', function () {
 
     const NYT = await ethers.getContractFactory('NYT');
     nyt = await NYT.deploy(
-      presale.address,
-      airdrop.address,
-      staking.address,
-      vesting.address,
       liquidity.address,
       treasury.address,
     );
     await nyt.waitForDeployment();
+    await nyt.initializeAllocations(
+      presale.address,
+      airdrop.address,
+      staking.address,
+      vesting.address,
+    );
   });
 
   // ── Supply ────────────────────────────────────────────────────────────────
   it('mints exactly 100,000,000 NYT total', async function () {
     expect(await nyt.totalSupply()).to.equal(TOTAL);
+  });
+
+  it('holds the full supply until allocations are initialized', async function () {
+    const NYT = await ethers.getContractFactory('NYT');
+    const uninitialized = await NYT.deploy(liquidity.address, treasury.address);
+    await uninitialized.waitForDeployment();
+
+    expect(await uninitialized.balanceOf(await uninitialized.getAddress())).to.equal(TOTAL);
+    expect(await uninitialized.allocationsInitialized()).to.be.false;
   });
 
   it('distributes 27% to presale contract', async function () {
@@ -113,7 +124,7 @@ describe('NYT Token', function () {
   });
 
   // ── Immutable addresses ───────────────────────────────────────────────────
-  it('stores immutable contract addresses', async function () {
+  it('stores the initialized contract addresses', async function () {
     expect(await nyt.presaleContract()).to.equal(presale.address);
     expect(await nyt.airdropContract()).to.equal(airdrop.address);
     expect(await nyt.stakingContract()).to.equal(staking.address);
@@ -128,12 +139,19 @@ describe('NYT Token', function () {
     await expect(
       NYT.deploy(
         ethers.ZeroAddress,
-        airdrop.address,
-        staking.address,
-        vesting.address,
-        liquidity.address,
         treasury.address,
       )
     ).to.be.revertedWith('NYT: zero address');
+  });
+
+  it('initializes allocations only once', async function () {
+    await expect(
+      nyt.initializeAllocations(
+        presale.address,
+        airdrop.address,
+        staking.address,
+        vesting.address,
+      )
+    ).to.be.revertedWith('NYT: allocations already initialized');
   });
 });

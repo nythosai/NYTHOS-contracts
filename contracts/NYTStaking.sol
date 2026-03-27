@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 // Minimal interface to call burnTokens() on the NYT contract
@@ -21,13 +22,15 @@ interface INYTBurnable is IERC20 {
  *   365 days  → 100% APY, 3x multiplier, min 5,000 NYT
  *
  *  Rewards:
- *   - Owner deposits ETH/USDC into the reward pool (from platform revenue).
- *   - Each staker earns proportional to: stake * multiplier / totalWeightedStake
+ *   - Owner deposits ETH into the reward pool (from platform revenue).
+ *   - Each active stake earns an annualized share of the available reward pool
+ *     based on its amount, lock multiplier, and tier APY target.
  *   - Early unstake incurs a 20% penalty on staked principal (penalty burned).
  *
- *  Note: APY is approximated via on-chain linear accumulation, not exact compound.
+ *  Note: APY is an annualized reward-share target, not a guaranteed fixed
+ *  payout. Claims are always capped by the ETH currently available in the pool.
  */
-contract NYTStaking is Ownable, ReentrancyGuard {
+contract NYTStaking is Ownable, Pausable, ReentrancyGuard {
 
     INYTBurnable public immutable nyt;
 
@@ -56,7 +59,7 @@ contract NYTStaking is Ownable, ReentrancyGuard {
     mapping(address => uint256[]) public userStakes;  // stakeId list per user
 
     // ─── Revenue reward pool ──────────────────────────────────────────────────
-    uint256 public rewardPool;            // ETH in reward pool
+    uint256 public rewardPool;            // ETH currently available in reward pool
     uint256 public totalWeightedStake;    // sum of (amount * multiplier) across all active stakes
 
     // Early unstake penalty
@@ -83,6 +86,10 @@ contract NYTStaking is Ownable, ReentrancyGuard {
     /**
      * @notice Owner deposits ETH from platform revenue into the reward pool.
      */
+    /// @notice Pause halts stake(), claimRewards(), and unstake() — use in emergencies.
+    function pause()   external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
+
     function depositRevenue() external payable onlyOwner {
         require(msg.value > 0, "Staking: zero value");
         rewardPool += msg.value;
@@ -96,7 +103,7 @@ contract NYTStaking is Ownable, ReentrancyGuard {
      * @param  amount     Amount of NYT to stake (in wei)
      * @param  tierIndex  0=30d, 1=90d, 2=180d, 3=365d
      */
-    function stake(uint256 amount, uint256 tierIndex) external nonReentrant {
+    function stake(uint256 amount, uint256 tierIndex) external nonReentrant whenNotPaused {
         require(tierIndex < 4, "Staking: invalid tier");
         Tier memory t = tiers[tierIndex];
         require(amount >= t.minStake, "Staking: below minimum");
@@ -126,7 +133,7 @@ contract NYTStaking is Ownable, ReentrancyGuard {
     /**
      * @notice Claim accumulated ETH rewards for a stake.
      */
-    function claimRewards(uint256 stakeId) external nonReentrant {
+    function claimRewards(uint256 stakeId) external nonReentrant whenNotPaused {
         require(_isOwnerOfStake(msg.sender, stakeId), "Staking: not your stake");
         Stake storage s = stakes[stakeId];
         require(s.active, "Staking: not active");
@@ -149,7 +156,7 @@ contract NYTStaking is Ownable, ReentrancyGuard {
     /**
      * @notice Unstake after lock expires. Claims remaining rewards automatically.
      */
-    function unstake(uint256 stakeId) external nonReentrant {
+    function unstake(uint256 stakeId) external nonReentrant whenNotPaused {
         require(_isOwnerOfStake(msg.sender, stakeId), "Staking: not your stake");
         Stake storage s = stakes[stakeId];
         require(s.active, "Staking: not active");
@@ -205,8 +212,11 @@ contract NYTStaking is Ownable, ReentrancyGuard {
 
     /**
      * @dev Calculates ETH reward owed since last claim.
-     *      Formula: (userWeight / totalWeight) * rewardPool * (elapsed / tierDuration)
-     *      Simplified pro-rata model.
+     *      Formula:
+     *      rewardPool * (tier APY) * (userWeight / totalWeight) * (elapsed / 365 days)
+     *
+     *      This keeps reward claims tied to available platform revenue while
+     *      making the advertised APY tiers materially affect payouts.
      */
     function _pendingReward(uint256 stakeId) internal view returns (uint256) {
         Stake memory s = stakes[stakeId];
@@ -218,9 +228,14 @@ contract NYTStaking is Ownable, ReentrancyGuard {
         uint256 elapsed = block.timestamp - s.lastClaim;
         if (elapsed == 0) return 0;
 
-        // Pro-rata share of reward pool, scaled by time elapsed vs duration
-        uint256 reward = (rewardPool * userWeight * elapsed) / (totalWeightedStake * t.duration);
-        return reward;
+        uint256 reward = (
+            rewardPool
+            * t.apyBP
+            * userWeight
+            * elapsed
+        ) / (10000 * totalWeightedStake * 365 days);
+
+        return reward > rewardPool ? rewardPool : reward;
     }
 
     function _isOwnerOfStake(address user, uint256 stakeId) internal view returns (bool) {
