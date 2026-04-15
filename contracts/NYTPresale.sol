@@ -8,16 +8,16 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 /**
- * @title NYTPresale — NYTHOS Early Access Sale
+ * @title NYTPresale - NYTHOS Early Access Sale
  * @notice Handles three sale rounds using the legacy enum names kept for
  *         frontend and test compatibility:
- *   Round 0: founder / strategic allowlist  — $0.005 per NYT
- *   Round 1: early access round             — $0.008 per NYT
- *   Round 2: public access round            — $0.010 per NYT
+ *   Round 0: founder / strategic allowlist  - $0.005 per NYT
+ *   Round 1: early access round             - $0.008 per NYT
+ *   Round 2: public access round            - $0.010 per NYT
  *
  *  Buyers pay in ETH. ETH/USD price is set by owner (updated periodically).
- *  Soft cap:  $100,000  — if not reached, buyers can refund
- *  Hard cap:  $219,000  — sale ends when hard cap is hit
+ *  Soft cap:  $100,000  - if not reached, buyers can refund
+ *  Hard cap:  $219,000  - sale ends when hard cap is hit
  *             ($25,000 founder + $104,000 early access + $90,000 public)
  *
  *  After sale, owner calls finalize() to release ETH and unlock claims.
@@ -91,11 +91,11 @@ contract NYTPresale is Ownable, Pausable, ReentrancyGuard {
         ethUsdFeed = AggregatorV3Interface(_ethUsdFeed);
         ethPriceUSD = _initialEthPriceUSD;
 
-        // Founder allowlist: $0.005, 5M NYT — whitelist only, $25,000 raise
+        // Founder allowlist: $0.005, 5M NYT - whitelist only, $25,000 raise
         rounds[0] = RoundInfo({ priceUSD: 50,  allocation:  5_000_000 * 1e18, sold: 0, whitelistOnly: true  });
-        // Early access:     $0.008, 13M NYT — $104,000 raise
+        // Early access:     $0.008, 13M NYT - $104,000 raise
         rounds[1] = RoundInfo({ priceUSD: 80,  allocation: 13_000_000 * 1e18, sold: 0, whitelistOnly: false });
-        // Public access:    $0.010, 9M NYT — 30-day cliff before claim, $90,000 raise
+        // Public access:    $0.010, 9M NYT - 30-day cliff before claim, $90,000 raise
         rounds[2] = RoundInfo({ priceUSD: 100, allocation:  9_000_000 * 1e18, sold: 0, whitelistOnly: false });
     }
 
@@ -112,7 +112,7 @@ contract NYTPresale is Ownable, Pausable, ReentrancyGuard {
         emit SaleClosed();
     }
 
-    /// @notice Pause halts buy(), claim(), and refund() — use in emergencies.
+    /// @notice Pause halts buy(), claim(), and refund() - use in emergencies.
     function pause()   external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 
@@ -216,7 +216,7 @@ contract NYTPresale is Ownable, Pausable, ReentrancyGuard {
             require(whitelist[msg.sender], "Presale: not whitelisted");
         }
 
-        // Resolve ETH/USD price — Chainlink primary, manual fallback
+        // Resolve ETH/USD price - Chainlink primary, manual fallback
         uint256 currentEthPrice = _getEthPrice();
 
         // Calculate NYT amount
@@ -250,7 +250,7 @@ contract NYTPresale is Ownable, Pausable, ReentrancyGuard {
             }
         }
 
-        // Cap at hard cap — thisUSD in cents = nytAmount × priceUSD / (1e18 × 100)
+        // Cap at hard cap - thisUSD in cents = nytAmount × priceUSD / (1e18 × 100)
         uint256 thisUSD = (nytAmount * r.priceUSD) / (1e18 * 100);
         require(raisedUSD + thisUSD <= HARD_CAP_USD, "Presale: hard cap reached");
 
@@ -284,9 +284,9 @@ contract NYTPresale is Ownable, Pausable, ReentrancyGuard {
     // ─── Claim ────────────────────────────────────────────────────────────────
 
     // Claim cliffs per round (measured from finalizedAt)
-    // Round 0 (Founder):      90-day cliff — protects against immediate founder dumps
-    // Round 1 (Early Access): 30-day cliff — short delay before early backers can sell
-    // Round 2 (Public):       30-day cliff — same as early access for public buyers
+    // Round 0 (Founder):      90-day cliff - protects against immediate founder dumps
+    // Round 1 (Early Access): 30-day cliff - short delay before early backers can sell
+    // Round 2 (Public):       30-day cliff - same as early access for public buyers
     uint256 public constant FOUNDER_CLIFF = 90 days;
     uint256 public constant EARLY_CLIFF   = 30 days;
     uint256 public constant PUBLIC_CLIFF  = 30 days;
@@ -294,9 +294,9 @@ contract NYTPresale is Ownable, Pausable, ReentrancyGuard {
     /**
      * @notice Buyer claims their NYT after the sale is finalized and soft cap reached.
      *         Cliffs per round:
-     *           Round 0 (Founder)      — 90 days after finalization
-     *           Round 1 (Early Access) — 30 days after finalization
-     *           Round 2 (Public)       — 30 days after finalization
+     *           Round 0 (Founder)      - 90 days after finalization
+     *           Round 1 (Early Access) - 30 days after finalization
+     *           Round 2 (Public)       - 30 days after finalization
      */
     function claim() external nonReentrant whenNotPaused {
         require(finalized, "Presale: not finalized");
@@ -366,6 +366,10 @@ contract NYTPresale is Ownable, Pausable, ReentrancyGuard {
         return raisedETHTotal;
     }
 
-    // Allow contract to receive ETH
-    receive() external payable {}
+    // Reject plain ETH transfers. Direct ETH sends bypass buy() and would
+    // leave the sender with no tokens and no refund path (ethPaid stays 0).
+    // Users must call buy() explicitly.
+    receive() external payable {
+        revert("Presale: use buy()");
+    }
 }

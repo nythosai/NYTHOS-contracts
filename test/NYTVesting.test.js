@@ -135,7 +135,7 @@ describe('NYTVesting', function () {
       await hre.network.provider.send('evm_setAutomine', [false]);
       const claimAfter = await vesting.claimable(beneficiary.address);
       await hre.network.provider.send('evm_setAutomine', [true]);
-      // At most 1 wei of new vesting in same second — claimable should be essentially 0
+      // At most 1 wei of new vesting in same second - claimable should be essentially 0
       expect(claimAfter).to.be.lte(ethers.parseEther('1'));
     });
   });

@@ -97,7 +97,7 @@ describe('NYTPresale', function () {
   // ─── Buying ───────────────────────────────────────────────────────────────
   describe('Buying', function () {
     beforeEach(async function () {
-      await presale.openRound(1); // round 1 — open to all
+      await presale.openRound(1); // round 1 - open to all
     });
 
     it('reverts if sale not open', async function () {

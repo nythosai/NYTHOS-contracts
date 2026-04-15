@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
- * @title NYTAirdrop — NYTHOS Community Airdrop
+ * @title NYTAirdrop - NYTHOS Community Airdrop
  * @notice Distributes NYT to a list of recipients in batches.
  *         Owner loads the recipient list and triggers distribution.
  *         Unclaimed tokens can be swept back after the claim window closes.

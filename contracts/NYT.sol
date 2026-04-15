@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
- * @title NYT — NYTHOS Token
+ * @title NYT - NYTHOS Token
  * @notice The planned utility and governance token of the NYTHOS platform.
  *         Total supply: 100,000,000 NYT (fixed, no minting after deploy).
  *         The full supply is minted to this contract at deployment, then
@@ -30,12 +30,12 @@ contract NYT is ERC20, ERC20Burnable, Ownable {
     uint256 public constant TOTAL_SUPPLY = 100_000_000 * 1e18;
 
     // ─── Allocation (basis points, must sum to 10000) ─────────────────────────
-    uint256 public constant PRESALE_BP   = 2700;  // 27% — founder, early, and public access allocation
-    uint256 public constant AIRDROP_BP   = 1800;  // 18% — community airdrop
-    uint256 public constant ECOSYSTEM_BP = 1800;  // 18% — staking rewards + platform incentives
-    uint256 public constant TEAM_BP      = 1500;  // 15% — team (1yr cliff, 2yr linear vest)
-    uint256 public constant LIQUIDITY_BP = 1500;  // 15% — DEX liquidity (Aerodrome + Uniswap)
-    uint256 public constant TREASURY_BP  =  700;  //  7% — audits, legal, emergency, ops
+    uint256 public constant PRESALE_BP   = 2700;  // 27% - founder, early, and public access allocation
+    uint256 public constant AIRDROP_BP   = 1800;  // 18% - community airdrop
+    uint256 public constant ECOSYSTEM_BP = 1800;  // 18% - staking rewards + platform incentives
+    uint256 public constant TEAM_BP      = 1500;  // 15% - team (1yr cliff, 2yr linear vest)
+    uint256 public constant LIQUIDITY_BP = 1500;  // 15% - DEX liquidity (Aerodrome + Uniswap)
+    uint256 public constant TREASURY_BP  =  700;  //  7% - audits, legal, emergency, ops
 
     // ─── Allocation recipients ────────────────────────────────────────────────
     address public presaleContract;

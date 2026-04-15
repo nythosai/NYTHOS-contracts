@@ -124,7 +124,7 @@ describe('NYTStaking', function () {
 
     it('pendingReward is negligible immediately after staking', async function () {
       const ids = await staking.getUserStakes(staker.address);
-      // Allow up to 1 second of accrual — reward for 1s out of 365 days is tiny
+      // Allow up to 1 second of accrual - reward for 1s out of 365 days is tiny
       const oneSecondMax = ethers.parseEther('10') * 1n / (365n * 24n * 60n * 60n);
       expect(await staking.pendingReward(ids[0])).to.be.lte(oneSecondMax + 1n);
     });

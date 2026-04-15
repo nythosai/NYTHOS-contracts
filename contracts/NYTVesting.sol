@@ -5,13 +5,13 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
- * @title NYTVesting — Team Token Vesting
+ * @title NYTVesting - Team Token Vesting
  * @notice Locks team tokens for 1 year (cliff), then releases linearly
  *         over 2 years. Owner can add multiple beneficiaries.
  *
  *  Timeline example (deploy = Jan 1 2025):
- *   - Cliff:    Jan 1  2026 — nothing claimable before this
- *   - Full vest: Jan 1 2028 — all tokens claimable by this date
+ *   - Cliff:    Jan 1  2026 - nothing claimable before this
+ *   - Full vest: Jan 1 2028 - all tokens claimable by this date
  */
 contract NYTVesting is Ownable {
 
@@ -29,6 +29,10 @@ contract NYTVesting is Ownable {
 
     mapping(address => VestingSchedule) public schedules;
     address[] public beneficiaries;
+
+    // Total NYT committed across all active grants (claimed tokens reduce this).
+    // Used to prevent over-committing: sum of all grants can never exceed contract balance.
+    uint256 public totalCommitted;
 
     // ─── Events ───────────────────────────────────────────────────────────────
     event GrantCreated(address indexed beneficiary, uint256 amount, uint256 startTime);
@@ -50,11 +54,15 @@ contract NYTVesting is Ownable {
         require(amount > 0, "Vesting: zero amount");
         require(!schedules[beneficiary].initialized, "Vesting: already exists");
 
-        // Contract must hold enough tokens
+        // Contract must hold enough tokens to cover this grant PLUS all existing
+        // uncommitted grants. Checking balanceOf alone allows over-commitment
+        // because previously granted (but unclaimed) tokens are still in the contract.
         require(
-            token.balanceOf(address(this)) >= amount,
-            "Vesting: insufficient balance"
+            token.balanceOf(address(this)) >= totalCommitted + amount,
+            "Vesting: insufficient balance for new grant"
         );
+
+        totalCommitted += amount;
 
         schedules[beneficiary] = VestingSchedule({
             totalAmount:   amount,
@@ -78,6 +86,7 @@ contract NYTVesting is Ownable {
         require(available > 0, "Vesting: nothing to claim");
 
         s.claimedAmount += available;
+        totalCommitted  -= available;
         token.transfer(msg.sender, available);
 
         emit Claimed(msg.sender, available);

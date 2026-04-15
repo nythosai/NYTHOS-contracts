@@ -12,7 +12,7 @@ interface INYTBurnable is IERC20 {
 }
 
 /**
- * @title NYTStaking — NYTHOS Revenue Share Staking
+ * @title NYTStaking - NYTHOS Revenue Share Staking
  * @notice Stake NYT for a fixed duration to earn a share of platform revenue.
  *
  *  Tiers:
@@ -86,7 +86,7 @@ contract NYTStaking is Ownable, Pausable, ReentrancyGuard {
     /**
      * @notice Owner deposits ETH from platform revenue into the reward pool.
      */
-    /// @notice Pause halts stake(), claimRewards(), and unstake() — use in emergencies.
+    /// @notice Pause halts stake(), claimRewards(), and unstake() - use in emergencies.
     function pause()   external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 

@@ -1,6 +1,6 @@
-// deploy.js — Deploys the NYTHOS Base contract stack in the current recommended order
+// deploy.js - Deploys the NYTHOS Base contract stack in the current recommended order
 // Run:  npx hardhat run scripts/deploy.js --network baseSepolia
-// Then: npx hardhat run scripts/deploy.js --network base  (mainnet — after audit)
+// Then: npx hardhat run scripts/deploy.js --network base  (mainnet - after audit)
 
 const hre = require('hardhat');
 const { ethers } = hre;
@@ -56,7 +56,7 @@ async function main() {
     || CHAINLINK_FEEDS[hre.network.name]
     || CHAINLINK_FEEDS.baseSepolia;
 
-  // Manual fallback price in USD cents — used only if Chainlink feed is stale (>2h).
+  // Manual fallback price in USD cents - used only if Chainlink feed is stale (>2h).
   // Formula: actual_eth_price_usd × 100 = value to pass in.
   const ETH_PRICE_USD_CENTS = process.env.ETH_PRICE_USD_CENTS
     ? parseInt(process.env.ETH_PRICE_USD_CENTS)

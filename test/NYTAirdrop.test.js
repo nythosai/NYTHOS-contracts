@@ -131,7 +131,7 @@ describe('NYTAirdrop', function () {
     });
 
     it('owner sweeps unclaimed tokens after deadline', async function () {
-      const deadline = (await time.latest()) + 3600; // 1 hour — safely in the future
+      const deadline = (await time.latest()) + 3600; // 1 hour - safely in the future
       await airdrop.setClaimDeadline(deadline);
       await time.increase(3601);
       const ownerBalBefore = await nyt.balanceOf(owner.address);
